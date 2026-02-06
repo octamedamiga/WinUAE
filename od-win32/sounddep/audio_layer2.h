@@ -16,25 +16,25 @@ class AudioResampler;
 struct AudioDebugVars {
     // Layer 1 (Paula)
     double paulaActualRate;
-    uae_u64 paulaFramesGenerated;
+    uint64_t paulaFramesGenerated;
     
     // Layer 2
     float ringBufferFillPercent;
-    uae_u64 layer2Underruns;
-    uae_u64 layer2Overruns;
+    uint64_t layer2Underruns;
+    uint64_t layer2Overruns;
     int resamplerInputRate;
     int resamplerOutputRate;
     
     // Layer 3 (WASAPI - будет добавлено в Phase 2)
     int wasapiPeriodFrames;
-    uae_u64 wasapiCallbackCount;
+    uint64_t wasapiCallbackCount;
     
     // Timing
     double avgProcessTimeUs;
     double maxProcessTimeUs;
     
     // General
-    uae_u64 totalProcessCalls;
+    uint64_t totalProcessCalls;
 };
 
 extern AudioDebugVars g_audioDebugVars;
@@ -57,11 +57,11 @@ public:
     void Shutdown();
     
     // Processing (вызывается из Paula thread)
-    // samples: uae_s16 stereo interleaved
+    // samples: int16_t stereo interleaved
     // frameCount: количество frames (не samples!)
     // cpuCyclesPerSample: для вычисления actual Paula rate
     void ProcessFromPaula(
-        const uae_s16* samples,
+        const int16_t* samples,
         int frameCount,
         double cpuCyclesPerSample,
         double syncCyclesPerSec

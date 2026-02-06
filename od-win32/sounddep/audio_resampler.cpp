@@ -34,10 +34,10 @@ bool AudioResampler::Initialize(double inRate, int outRate, int numChannels) {
     position = 0.0;
     
     // Allocate last frame buffer для interpolation
-    lastFrame = new uae_s16[channels];
+    lastFrame = new int16_t[channels];
     if (!lastFrame) return false;
     
-    memset(lastFrame, 0, channels * sizeof(uae_s16));
+    memset(lastFrame, 0, channels * sizeof(int16_t));
     
     initialized = true;
     return true;
@@ -54,7 +54,7 @@ void AudioResampler::Shutdown() {
 }
 
 int AudioResampler::Process(
-    const uae_s16* input,
+    const int16_t* input,
     int inputFrames,
     float* output,
     int outputCapacity)
@@ -82,8 +82,8 @@ int AudioResampler::Process(
         
         // Linear interpolation для каждого канала
         for (int ch = 0; ch < channels; ch++) {
-            uae_s16 sample0 = input[inputIndex * channels + ch];
-            uae_s16 sample1 = input[(inputIndex + 1) * channels + ch];
+            int16_t sample0 = input[inputIndex * channels + ch];
+            int16_t sample1 = input[(inputIndex + 1) * channels + ch];
             
             // Interpolate
             double interpolated = sample0 + (sample1 - sample0) * frac;

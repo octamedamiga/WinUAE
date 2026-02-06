@@ -25,13 +25,13 @@ public:
     void SetInputRate(double newInputRate) { inputRate = newInputRate; }
     
     // Process
-    // input: uae_s16 samples (interleaved)
+    // input: int16_t samples (interleaved)
     // inputFrames: количество frames
     // output: float samples (interleaved)
     // outputCapacity: максимум frames в output buffer
     // Возвращает: количество записанных frames в output
     int Process(
-        const uae_s16* input,
+        const int16_t* input,
         int inputFrames,
         float* output,
         int outputCapacity
@@ -45,5 +45,5 @@ private:
     
     // Resampling state
     double position;  // Fractional position в input
-    uae_s16* lastFrame;  // Последний frame для interpolation
+    int16_t* lastFrame;  // Последний frame для interpolation
 };

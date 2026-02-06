@@ -142,7 +142,7 @@ void AudioLayer2::Shutdown() {
 }
 
 void AudioLayer2::ProcessFromPaula(
-    const uae_s16* samples,
+    const int16_t* samples,
     int frameCount,
     double cpuCyclesPerSample,
     double syncCyclesPerSec)
@@ -217,7 +217,7 @@ void AudioLayer2::ProcessFromPaula(
     int resampledFrames = 0;
     if (resampler) {
         resampledFrames = resampler->Process(
-            (const uae_s16*)samples, frameCount,
+            samples, frameCount,
             tempBuffer, outputFrames
         );
 
@@ -249,7 +249,7 @@ void AudioLayer2::ProcessFromPaula(
     }
     
     // Update debug vars periodically
-    uae_u64 now = GetTickCount64();
+    int64_t now = GetTickCount64();
     if (now - lastLogTime >= 1000) {  // Every 1 second
         lastLogTime = now;
         
