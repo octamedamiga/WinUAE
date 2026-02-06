@@ -1,0 +1,37 @@
+--- a/od-win32/sounddep/sound.cpp
++++ b/od-win32/sounddep/sound.cpp
+@@ -3060,6 +3060,20 @@ void set_volume_sound_device (struct sound_data *sd, int volume, int mute)
+ 
+ void finish_sound_buffer (void)
+ {
++#ifdef USE_AUDIO_LAYER2
++	// DIRECT WRITE MODE: This function should not be called
++	// Samples are pushed directly to Layer 2 via PushSample()
++	// If this is being called, it means PUT_SOUND_WORD macros are still active
++	
++	static int warnCount = 0;
++	if (warnCount < 10) {
++		write_log(_T("WARNING: finish_sound_buffer() called in DIRECT WRITE mode! (call #%d)\n"), warnCount + 1);
++		write_log(_T("This indicates audio.cpp is still using batched output path.\n"));
++		write_log(_T("Check that sample_handler is set to direct version.\n"));
++		warnCount++;
++	}
++	
++	// Reset buffer pointer to prevent accumulation
++	paula_sndbufpt = paula_sndbuffer;
++	return;
++#else
++	// BATCHED MODE: Original finish_sound_buffer implementation
++	
+ #ifdef USE_AUDIO_LAYER2
+     static int defineLogCount = 0;
+     if (defineLogCount < 5) {
+@@ -3180,6 +3194,8 @@ void finish_sound_buffer (void)
+ 	} else {
+ 		send_sound(sdp, paula_sndbuffer);
+ 	}
++	
++#endif // USE_AUDIO_LAYER2
+ }
+ 
+ void restart_sound_buffer (void)

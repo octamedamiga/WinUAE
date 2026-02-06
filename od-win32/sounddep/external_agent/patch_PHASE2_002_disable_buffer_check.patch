@@ -1,0 +1,27 @@
+--- a/audio.cpp
++++ b/audio.cpp
+@@ -778,6 +778,15 @@ static void set_sound_buffers(void)
+ 
+ static void check_sound_buffers(void)
+ {
++#ifdef USE_AUDIO_LAYER2
++	// DIRECT WRITE MODE: Buffer check disabled
++	// Samples go directly to Layer 2 via PushSample(), no intermediate buffer
++	// paula_sndbuffer is not used in this mode
++	// This function is still called for compatibility but does nothing
++	return;
++#else
++	// BATCHED MODE: Original buffer management
++	
+ #if SOUNDSTUFF > 1
+ 	int len;
+ #endif
+@@ -840,6 +849,8 @@ static void check_sound_buffers(void)
+ 	if ((uae_u8*)paula_sndbufpt - (uae_u8*)paula_sndbuffer >= paula_sndbufsize) {
+ 		finish_sound_buffer();
+ 	}
++	
++#endif // USE_AUDIO_LAYER2
+ #if SOUNDSTUFF > 1
+ 	if (doublesample > 0) {
+ 		int len = paula_sndbufpt - paula_sndbufpt_start;

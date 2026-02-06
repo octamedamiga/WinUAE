@@ -1,0 +1,249 @@
+--- a/od-win32/sounddep/audio_layer2.cpp
++++ b/od-win32/sounddep/audio_layer2.cpp
+@@ -54,6 +54,7 @@ void AudioLog(int level, const TCHAR* layer, const TCHAR* format, ...) {
+ AudioLayer2::AudioLayer2()
+     : initialized(false)
+     , ringBuffer(nullptr)
++    , inputBuffer(nullptr)
+     , resampler(nullptr)
+     , tempBuffer(nullptr)
+     , tempBufferCapacity(0)
+@@ -62,6 +63,7 @@ AudioLayer2::AudioLayer2()
+     , syncAdjustment(0.0)
+     , syncIntegral(0.0)
+     , totalSamplesProcessed(0)
++    , rateMeasurement()
+ {
+     config.targetSampleRate = 0;
+     config.channels = 0;
+@@ -88,7 +90,17 @@ bool AudioLayer2::Initialize(const AudioLayer2Config& cfg) {
+     
+     // Начальная конфигурация (будет перекрыта через Reconfigure)
+     hostBufferFrames = 480; // 10ms default
+-    int frames = config.ringBufferFrames;
++    
++    // DIRECT WRITE MODE: Create INPUT ring buffer (small - 10ms capacity)
++    int inputCapacity = config.targetSampleRate / 100;  // 480 frames @ 48kHz
++    inputBuffer = new AudioRingBuffer<int16_t>();
++    if (!inputBuffer->Initialize(inputCapacity, config.channels)) {
++        AudioLog(0, _T("Layer2"), _T("Input ring buffer init failed\n"));
++        delete inputBuffer;
++        inputBuffer = nullptr;
++        return false;
++    }
++    
++    int frames = config.ringBufferFrames;
+     if (frames < config.targetSampleRate / 2) frames = config.targetSampleRate / 2;
+ 
+     // Create ring buffer
+@@ -127,7 +139,7 @@ bool AudioLayer2::Initialize(const AudioLayer2Config& cfg) {
+     initialized = true;
+     lastLogTime = GetTickCount64();
+ 
+-    AudioLog(2, _T("Layer2"), _T("Initialized: %d Hz, %d ch (Waiting for host periodicity)\n"),
++    AudioLog(2, _T("Layer2"), _T("Initialized: %d Hz, %d ch, InputBuf=%d frames, OutputBuf=%d frames\n"),
+              config.targetSampleRate, config.channels);
+     
+     return true;
+@@ -145,6 +157,7 @@ bool AudioLayer2::Reconfigure(int frames) {
+     int ringCapacity = config.targetSampleRate / 5; // 200ms fixed capacity
+     
+     if (ringBuffer) delete ringBuffer;
++    if (inputBuffer) delete inputBuffer;
+     ringBuffer = new AudioRingBuffer<float>();
+     ringBuffer->Initialize(ringCapacity, config.channels);
+     
+@@ -174,6 +187,12 @@ void AudioLayer2::Shutdown() {
+     if (!initialized) return;
+     
+     if (ringBuffer) {
++        ringBuffer->Shutdown();
++        delete ringBuffer;
++        ringBuffer = nullptr;
++    }
++    
++    if (inputBuffer) {
++        inputBuffer->Shutdown();
+         ringBuffer->Shutdown();
+         delete ringBuffer;
+         ringBuffer = nullptr;
+@@ -197,6 +216,176 @@ void AudioLayer2::Shutdown() {
+     AudioLog(2, _T("Layer2"), _T("Shutdown complete\n"));
+ }
+ 
++// ============================================================================
++// DIRECT WRITE MODE IMPLEMENTATION
++// ============================================================================
++
++void AudioLayer2::PushSample(int16_t left, int16_t right, float cycles_per_sample) {
++    if (!initialized || !inputBuffer) return;
++    
++    g_audioDebugVars.pushSampleCalls++;
++    
++    // Interleave stereo
++    int16_t stereo[2] = {left, right};
++    
++    // Write to input buffer
++    if (!inputBuffer->Write(stereo, 1)) {
++        // Input buffer full (rare - means resampler is falling behind)
++        g_audioDebugVars.layer2Overruns++;
++        
++        // Drop oldest sample and try again (better than blocking)
++        int16_t dummy[2];
++        inputBuffer->Read(dummy, 1);
++        inputBuffer->Write(stereo, 1);
++    }
++    
++    // Update rate measurement
++    UpdateRateMeasurement(cycles_per_sample);
++    
++    // Trigger resampling (non-blocking check)
++    ResampleInputToOutput();
++}
++
++void AudioLayer2::UpdateRateMeasurement(float cycles_per_sample) {
++    // Calculate instantaneous rate
++    // Paula clock speed from syncbase (e.g., 3546895 Hz for PAL)
++    extern double syncbase;
++    double instantRate = syncbase / cycles_per_sample;
++    
++    // Sanity check - reject outliers
++    if (instantRate < 40000.0 || instantRate > 56000.0) {
++        // Invalid - probably initialization or mode switch
++        static int errorCount = 0;
++        if (errorCount++ < 5) {
++            AudioLog(1, _T("Layer2"), _T("WARNING: Rejected outlier rate: %.1f Hz (cycles=%.2f)\n"),
++                     instantRate, cycles_per_sample);
++        }
++        return;
++    }
++    
++    // EMA filter (very slow - 10000 sample time constant = ~200ms @ 48kHz)
++    // This prevents reacting to individual sample jitter
++    const double alpha = 0.0001;
++    
++    if (rateMeasurement.currentRate == 0.0) {
++        // First valid measurement
++        rateMeasurement.currentRate = instantRate;
++        rateMeasurement.emaRate = instantRate;
++        AudioLog(2, _T("Layer2"), _T("Initial rate measurement: %.2f Hz\n"), instantRate);
++    } else {
++        // Update EMA
++        rateMeasurement.emaRate = alpha * instantRate + (1.0 - alpha) * rateMeasurement.emaRate;
++        rateMeasurement.currentRate = rateMeasurement.emaRate;
++    }
++    
++    rateMeasurement.sampleCount++;
++    
++    // Periodic logging (every 10000 samples ≈ 200ms)
++    if (rateMeasurement.sampleCount % 10000 == 0) {
++        uint64_t now = GetTickCount64();
++        if (now - rateMeasurement.lastLogTime > 5000) {  // Max once per 5 seconds
++            AudioLog(2, _T("Layer2"), _T("Rate: instant=%.2f Hz, EMA=%.2f Hz, InputBuf=%d, OutputBuf=%.1f%%\n"),
++                     instantRate,
++                     rateMeasurement.emaRate,
++                     inputBuffer ? inputBuffer->GetAvailableRead() : 0,
++                     ringBuffer ? ringBuffer->GetFillPercent() * 100.0f : 0.0f);
++            rateMeasurement.lastLogTime = now;
++        }
++    }
++    
++    // Update debug variables
++    g_audioDebugVars.estimatedPaulaRateHz = rateMeasurement.currentRate;
++    if (inputBuffer) g_audioDebugVars.inputBufferFrames = inputBuffer->GetAvailableRead();
++    if (ringBuffer) g_audioDebugVars.outputBufferFrames = ringBuffer->GetAvailableRead();
++}
++
++void AudioLayer2::ResampleInputToOutput() {
++    if (!initialized || !inputBuffer || !ringBuffer || !resampler) return;
++    
++    // Check if we have enough input for efficient resampling
++    int available = inputBuffer->GetAvailableRead();
++    
++    // Don't resample unless we have at least 16 samples
++    // This reduces overhead from frequent small operations
++    if (available < 16) {
++        return;
++    }
++    
++    // Don't process too much at once (spread CPU load)
++    // Maximum 128 samples per call ≈ 2.6ms of audio @ 48kHz
++    int toProcess = available;
++    if (toProcess > 128) {
++        toProcess = 128;
++    }
++    
++    g_audioDebugVars.resampleCalls++;
++    
++    // Allocate temp buffer for input samples
++    int16_t* inputSamples = new int16_t[toProcess * config.channels];
++    
++    // Read from input buffer
++    int read = inputBuffer->Read(inputSamples, toProcess);
++    
++    if (read > 0) {
++        // Initialize resampler if needed
++        if (!resampler->IsInitialized()) {
++            double initialRate = rateMeasurement.currentRate > 0 ? 
++                                 rateMeasurement.currentRate : 48000.0;
++            
++            if (!resampler->Initialize(initialRate, config.targetSampleRate, config.channels)) {
++                AudioLog(0, _T("Layer2"), _T("ERROR: Resampler initialization failed!\n"));
++                delete[] inputSamples;
++                return;
++            }
++            
++            AudioLog(2, _T("Layer2"), _T("Resampler initialized: %.2f Hz → %d Hz\n"),
++                     initialRate, config.targetSampleRate);
++        } else {
++            // Update rate dynamically
++            if (rateMeasurement.currentRate > 0) {
++                resampler->SetInputRate(rateMeasurement.currentRate);
++            }
++        }
++        
++        // Calculate expected output size
++        double rateRatio = (double)config.targetSampleRate / rateMeasurement.currentRate;
++        int expectedOutput = (int)(read * rateRatio) + 32;  // +32 for safety margin
++        
++        // Ensure temp buffer is large enough
++        if (expectedOutput > tempBufferCapacity) {
++            if (tempBuffer) delete[] tempBuffer;
++            tempBufferCapacity = expectedOutput * 2;
++            tempBuffer = new float[tempBufferCapacity * config.channels];
++            AudioLog(2, _T("Layer2"), _T("Temp buffer expanded to %d frames\n"), tempBufferCapacity);
++        }
++        
++        // Resample
++        int resampled = resampler->Process(
++            inputSamples,
++            read,
++            tempBuffer,
++            expectedOutput
++        );
++        
++        // Write to output buffer
++        if (resampled > 0) {
++            if (!ringBuffer->Write(tempBuffer, resampled)) {
++                // Output buffer full (WASAPI not pulling fast enough)
++                g_audioDebugVars.layer2Overruns++;
++                
++                static int overrunLogCount = 0;
++                if (overrunLogCount++ % 100 == 0) {
++                    AudioLog(1, _T("Layer2"), _T("WARNING: Output buffer full! Overruns=%d\n"),
++                             g_audioDebugVars.layer2Overruns);
++                }
++            }
++        }
++    }
++    
++    delete[] inputSamples;
++}
++
++// ============================================================================
++// LEGACY BATCHED MODE (kept for compatibility/fallback)
++// ============================================================================
++
+ void AudioLayer2::ProcessFromPaula(
+     const int16_t* samples,
+     int frameCount,

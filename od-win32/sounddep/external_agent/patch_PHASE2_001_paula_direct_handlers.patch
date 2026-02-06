@@ -1,0 +1,147 @@
+--- a/audio.cpp
++++ b/audio.cpp
+@@ -1405,6 +1405,110 @@ void sample16s_handler (void)
+ 	sample16_handler ();
+ }
+
++// ============================================================================
++// DIRECT LAYER 2 OUTPUT (NEW ARCHITECTURE)
++// ============================================================================
++
++#ifdef USE_AUDIO_LAYER2
++
++// Forward declarations
++extern AudioLayer2* g_audioLayer2;
++extern float scaled_sample_evtime;
++
++// Global accumulator for stereo pairing
++static int16_t g_sample_accumulator[2] = {0, 0};
++static int g_sample_channel_count = 0;
++
++// Direct output function (replaces PUT_SOUND_WORD macro path)
++static void put_sound_sample_direct(int16_t sample, int channel) {
++	g_sample_accumulator[channel] = sample;
++	g_sample_channel_count++;
++	
++	// When we have both channels, send to Layer 2
++	if (g_sample_channel_count >= 2) {
++		if (g_audioLayer2) {
++			g_audioLayer2->PushSample(
++				g_sample_accumulator[0],  // Left
++				g_sample_accumulator[1],  // Right
++				scaled_sample_evtime
++			);
++		}
++		g_sample_channel_count = 0;
++	}
++}
++
++// New mono sample handler (sends same sample to both channels)
++void sample16_handler_direct(void) {
++	int data0 = audio_channel[0].data.current_sample;
++	int data1 = audio_channel[1].data.current_sample;
++	int data2 = audio_channel[2].data.current_sample;
++	int data3 = audio_channel[3].data.current_sample;
++	int data;
++	
++	DO_CHANNEL_1(data0, 0);
++	DO_CHANNEL_1(data1, 1);
++	DO_CHANNEL_1(data2, 2);
++	DO_CHANNEL_1(data3, 3);
++	data0 &= audio_channel[0].data.adk_mask;
++	data1 &= audio_channel[1].data.adk_mask;
++	data2 &= audio_channel[2].data.adk_mask;
++	data3 &= audio_channel[3].data.adk_mask;
++	data0 += data1;
++	data0 += data2;
++	data0 += data3;
++	data = SBASEVAL16(2) + data0;
++	data = FINISH_DATA(data, 16, 0);
++	
++	do_filter(&data, 0);
++	get_extra_channels_sample2(&data, NULL, 0);
++	
++	// Send to Layer 2 directly (mono = same sample both channels)
++	put_sound_sample_direct((int16_t)data, 0);
++	put_sound_sample_direct((int16_t)data, 1);
++}
++
++// New stereo sample handler
++void sample16s_handler_direct(void) {
++	int data0 = audio_channel[0].data.current_sample;
++	int data1 = audio_channel[1].data.current_sample;
++	int data2 = audio_channel[2].data.current_sample;
++	int data3 = audio_channel[3].data.current_sample;
++	int data_left, data_right;
++	
++	DO_CHANNEL_1(data0, 0);
++	DO_CHANNEL_1(data1, 1);
++	DO_CHANNEL_1(data2, 2);
++	DO_CHANNEL_1(data3, 3);
++	data0 &= audio_channel[0].data.adk_mask;
++	data1 &= audio_channel[1].data.adk_mask;
++	data2 &= audio_channel[2].data.adk_mask;
++	data3 &= audio_channel[3].data.adk_mask;
++	
++	data_left = data0 + data2;
++	data_right = data1 + data3;
++	
++	data_left = SBASEVAL16(1) + data_left;
++	data_right = SBASEVAL16(1) + data_right;
++	
++	data_left = FINISH_DATA(data_left, 16, 0);
++	data_right = FINISH_DATA(data_right, 16, 1);
++	
++	do_filter(&data_left, 0);
++	do_filter(&data_right, 1);
++	
++	get_extra_channels_sample2(&data_left, &data_right, 0);
++	
++	// Send stereo to Layer 2
++	put_sound_sample_direct((int16_t)data_left, 0);
++	put_sound_sample_direct((int16_t)data_right, 1);
++}
++
++#endif // USE_AUDIO_LAYER2
++
++// ============================================================================
++// END DIRECT OUTPUT
++// ============================================================================
++
+ static void sample16si_crux_handler (void)
+ {
+ 	sample16i_crux_handler ();
+@@ -2276,6 +2380,24 @@ void check_prefs_changed_audio (void)
+ 		return;
+ 	}
+ 	
++#ifdef USE_AUDIO_LAYER2
++	// DIRECT WRITE MODE: Use direct output handlers
++	// These bypass paula_sndbuffer and write directly to Layer 2
++	
++	if (currprefs.sound_stereo == SND_MONO) {
++		sample_handler = sample16_handler_direct;
++		write_log(_T("AUDIO: Using DIRECT MONO handler (Layer 2)\n"));
++	} else {
++		sample_handler = sample16s_handler_direct;
++		write_log(_T("AUDIO: Using DIRECT STEREO handler (Layer 2)\n"));
++	}
++	
++	// Note: Interpolation modes (SINC, anti-click, etc.) not yet supported in direct mode
++	// TODO: Implement interpolated versions of direct handlers if needed
++	
++#else
++	// BATCHED MODE: Original handler selection
++	
+ 	if (sample_handler == sample16_handler
+ 		|| sample_handler == sample16i_crux_handler
+ 		|| sample_handler == sample16i_rh_handler
+@@ -2308,6 +2430,8 @@ void check_prefs_changed_audio (void)
+ 			: sample16ss_anti_handler);
+ 	}
+ 	
++#endif // USE_AUDIO_LAYER2
++	
+ 	if (sample_handler == sample16si_sinc_handler || sample_handler == sample16i_sinc_handler || sample_handler == sample16ss_sinc_handler) {
+ 		sample_prehandler = sinc_prehandler;
+ 		extra_sample_prehandler = sinc_extra_prehandler;
