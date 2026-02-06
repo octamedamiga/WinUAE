@@ -1,0 +1,52 @@
+--- a/od-win32/sounddep/audio_layer2.h
++++ b/od-win32/sounddep/audio_layer2.h
+@@ -86,6 +86,29 @@ public:
+     float GetSyncAdjustment() const;
+     
+ private:
++    // ======================================
++    // PHASE 6: BURST-AWARE CONTROL
++    // ======================================
++    
++    // Burst tracking state
++    struct BurstTracker {
++        uint64_t lastBurstTime;        // Timestamp of last burst (microseconds)
++        uint64_t lastBurstInterval;    // Measured interval between bursts (μs)
++        double estimatedPaulaRate;     // Hz, derived from burstInterval
++        double emaRate;                // Exponentially smoothed rate estimate
++        int lastBurstSize;             // Frames in last burst
++        int quietFrameCount;           // Frames since last burst
++        bool emergencyMode;
++        double emergencyRateCorrection;
++        int burstCount;
++        
++        BurstTracker() : lastBurstTime(0), lastBurstInterval(0), estimatedPaulaRate(0.0),
++                        emaRate(0.0), lastBurstSize(0), quietFrameCount(0),
++                        emergencyMode(false), emergencyRateCorrection(0.0), burstCount(0) {}
++    } burstTracker;
++    
++    // ======================================
++    
+     bool initialized;
+     AudioLayer2Config config;
+     int hostBufferFrames; // Размер буфера WASAPI в фреймах
+@@ -107,10 +130,17 @@ private:
+     float smoothedFill;          // Legacy smoothing (remove later?)
+     float avgFill;               // PHASE 5.5: EMA Smoothed Fill (Damped Reservoir)
+     
+-    // Legacy metrics
++    // Metrics
+     uint64_t totalSamplesProcessed;
+     
+-    // Pre-roll (Stability)
++    // Pre-roll
+     bool isPreroll;
+     int prerollThreshold; // В фреймах
++    
++    // Helper functions for burst-aware control
++    uint64_t GetMicroseconds() const;
++    void HandleBurst(uint64_t timestamp, int frameCount);
++    void UpdateRateEstimate(uint64_t interval, int frameCount);
++    void CheckEmergencyConditions();
++    void ConfigureResampler();
+ };

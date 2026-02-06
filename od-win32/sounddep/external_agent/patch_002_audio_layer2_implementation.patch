@@ -1,0 +1,342 @@
+--- a/od-win32/sounddep/audio_layer2.cpp
++++ b/od-win32/sounddep/audio_layer2.cpp
+@@ -63,6 +63,7 @@ AudioLayer2::AudioLayer2()
+     , syncIntegral(0.0)
+     , totalSamplesProcessed(0)
++    , burstTracker()
+ {
+     config.targetSampleRate = 0;
+     config.channels = 0;
+@@ -197,146 +198,92 @@ void AudioLayer2::Shutdown() {
+     AudioLog(2, _T("Layer2"), _T("Shutdown complete\n"));
+ }
+ 
++// ======================================
++// PHASE 6: BURST-AWARE CONTROL
++// ======================================
++
++uint64_t AudioLayer2::GetMicroseconds() const {
++    LARGE_INTEGER freq, counter;
++    QueryPerformanceFrequency(&freq);
++    QueryPerformanceCounter(&counter);
++    return (counter.QuadPart * 1000000ULL) / freq.QuadPart;
++}
++
++void AudioLayer2::HandleBurst(uint64_t timestamp, int frameCount) {
++    if (burstTracker.lastBurstTime == 0) {
++        // First burst - just record timestamp
++        burstTracker.lastBurstTime = timestamp;
++        burstTracker.lastBurstSize = frameCount;
++        burstTracker.burstCount = 1;
++        return;
++    }
++    
++    // Calculate interval since last burst
++    uint64_t interval = timestamp - burstTracker.lastBurstTime;
++    burstTracker.lastBurstInterval = interval;
++    burstTracker.lastBurstTime = timestamp;
++    burstTracker.burstCount++;
++    
++    // Update rate estimate
++    UpdateRateEstimate(interval, burstTracker.lastBurstSize);
++    
++    // Store size for next iteration
++    burstTracker.lastBurstSize = frameCount;
++    burstTracker.quietFrameCount = 0;
++    
++    // Log burst event (rate-limited)
++    static int burstLogCounter = 0;
++    if (++burstLogCounter % 50 == 0) {
++        AudioLog(3, _T("Layer2"), 
++                 _T("Burst #%d: %d frames, interval=%.2f ms, rate=%.1f Hz"),
++                 burstTracker.burstCount, frameCount,
++                 interval / 1000.0, burstTracker.estimatedPaulaRate);
++    }
++}
++
++void AudioLayer2::UpdateRateEstimate(uint64_t interval, int frameCount) {
++    // Calculate instantaneous rate: rate = frames / time
++    double instantRate = (frameCount * 1000000.0) / interval;
++    
++    // Sanity check - reject outliers
++    if (instantRate < 40000.0 || instantRate > 56000.0) {
++        AudioLog(1, _T("Layer2"), 
++                 _T("WARNING: Rejected outlier rate: %.1f Hz"), instantRate);
++        return;
++    }
++    
++    // EMA filter with α = 0.15 (time constant ≈ 6.7 bursts)
++    const double alpha = 0.15;
++    
++    if (burstTracker.estimatedPaulaRate == 0.0) {
++        // First valid measurement
++        burstTracker.estimatedPaulaRate = instantRate;
++        burstTracker.emaRate = instantRate;
++    } else {
++        // Update EMA
++        burstTracker.emaRate = alpha * instantRate + (1.0 - alpha) * burstTracker.emaRate;
++        burstTracker.estimatedPaulaRate = burstTracker.emaRate;
++    }
++}
++
++void AudioLayer2::CheckEmergencyConditions() {
++    if (!ringBuffer) return;
++    
++    float fill = ringBuffer->GetFillPercent();
++    
++    // Entry conditions
++    if (!burstTracker.emergencyMode) {
++        if (fill < 0.15f || fill > 0.85f) {
++            burstTracker.emergencyMode = true;
++            burstTracker.emergencyRateCorrection = 0.0;
++            
++            AudioLog(1, _T("Layer2"), 
++                     _T("*** EMERGENCY MODE ACTIVATED: fill=%.1f%% ***"), 
++                     fill * 100.0f);
++        }
++        return;
++    }
++    
++    // Emergency correction (P-controller)
++    const float targetFill = 0.40f;
++    float error = fill - targetFill;
++    
++    // Kp = 200 Hz/error (from mathematical analysis)
++    const double Kp = 200.0;
++    burstTracker.emergencyRateCorrection = -error * Kp;
++    
++    // Clamp to ±2% rate deviation
++    double maxCorrection = burstTracker.estimatedPaulaRate * 0.02;
++    if (burstTracker.emergencyRateCorrection > maxCorrection) {
++        burstTracker.emergencyRateCorrection = maxCorrection;
++    }
++    if (burstTracker.emergencyRateCorrection < -maxCorrection) {
++        burstTracker.emergencyRateCorrection = -maxCorrection;
++    }
++    
++    // Exit condition: back to safe zone (25% - 75%)
++    if (fill > 0.25f && fill < 0.75f) {
++        AudioLog(2, _T("Layer2"), 
++                 _T("Emergency mode deactivated: fill=%.1f%%"), 
++                 fill * 100.0f);
++        
++        burstTracker.emergencyMode = false;
++        burstTracker.emergencyRateCorrection = 0.0;
++    }
++}
++
++void AudioLayer2::ConfigureResampler() {
++    if (!resampler || !resampler->IsInitialized()) return;
++    
++    double targetRate = burstTracker.estimatedPaulaRate;
++    
++    // Apply emergency correction if active
++    if (burstTracker.emergencyMode) {
++        targetRate += burstTracker.emergencyRateCorrection;
++    }
++    
++    // Safety bounds
++    if (targetRate < 10000.0) targetRate = 10000.0;
++    if (targetRate > 96000.0) targetRate = 96000.0;
++    
++    // Update resampler
++    resampler->SetInputRate(targetRate);
++}
++
+ void AudioLayer2::ProcessFromPaula(
+     const int16_t* samples,
+     int frameCount,
+     double cpuCyclesPerSample,
+     double syncCyclesPerSec)
+ {
+-    static int callCount = 0;
+-    callCount++;
+-    
+     if (!initialized || !samples || frameCount == 0) return;
+     
++    uint64_t now = GetMicroseconds();
+     g_audioDebugVars.totalProcessCalls++;
+     
+-    // 1. Определение БАЗОВОЙ логической частоты (Hardware-Native)
+-    // Эта частота привязана к Amiga cycles. Она стабильна во времени.
+-    double baseRate = syncCyclesPerSec / cpuCyclesPerSample;
++    // ======================================
++    // PHASE 6: BURST-AWARE CONTROL
++    // ======================================
+     
+-    // 2. Вычисление ошибки для ядра (Core-Warping Sync)
+-    float fill = ringBuffer->GetFillPercent();
++    // 1. BURST DETECTION
++    const int BURST_THRESHOLD = 100;
++    const int QUIET_THRESHOLD = 240;  // 5ms @ 48kHz
+     
+-    // PHASE 5.5 Rev 3: "Damped Reservoir" - Stable Start
++    bool isBurst = (frameCount > BURST_THRESHOLD && 
++                    burstTracker.quietFrameCount > QUIET_THRESHOLD);
+     
+-    // 1. Update EMA (Low Pass Filter)
+-    float targetFill = (float)prerollThreshold / (ringBuffer ? ringBuffer->GetCapacity() : 1);
+-
+-    if (callCount == 1) {
+-        // CRITICAL FIX: Initialize Average to TARGET, not 0 or current.
+-        // This prevents the Safety Net from triggering falsely at startup.
+-        avgFill = targetFill; 
++    if (isBurst) {
++        HandleBurst(now, frameCount);
++    } else {
++        burstTracker.quietFrameCount += frameCount;
+     }
+-    avgFill = avgFill * 0.95f + fill * 0.05f;
+-
+-    float currentFill = avgFill; 
+-    float error = currentFill - targetFill;
+-
+-    // 2. Deadzone Logic (Conditional)
+-    const float DEADZONE = 0.05f; 
+-    float framesInBuf = currentFill * (ringBuffer ? ringBuffer->GetCapacity() : 1920);
+-
+-    if (framesInBuf > 480.0f && fabs(error) < DEADZONE) {
+-        // Safe Zone
+-        error = 0.0f;
+-    } else {
+-        // Outside safe zone OR starving
+-        if (fabs(error) >= DEADZONE) {
+-            if (error > 0) error -= DEADZONE;
+-            else error += DEADZONE;
+-        }
+-    }
+-    
+-    // Clamp error to avoid crazy spikes
+-    if (error < -0.5f) error = -0.5f;
+-
+-    // 3. PI Controller (Balanced)
+-    static double rateIntegrator = 0.0;
+     
+-    // I-Term
+-    rateIntegrator += error * 0.02; 
+-
+-    // Safety Clamp for Integrator (+/- 5%)
+-    if (rateIntegrator > baseRate * 0.05) rateIntegrator = baseRate * 0.05;
+-    if (rateIntegrator < -baseRate * 0.05) rateIntegrator = -baseRate * 0.05;
+-
+-    // P-Term: Reduced from 1000.0 to 150.0 to stop crackling oscillation
+-    // But kept high enough to react to starvation effectively
+-    double proportional = error * 150.0; 
+-
+-    resampledRate = baseRate + rateIntegrator + proportional;
+-
+-    // Hard safety locks
+-    if (resampledRate < 10000.0) resampledRate = 10000.0;
+-    if (resampledRate > 192000.0) resampledRate = 192000.0;
+-
+-    // Log update
+-    if (callCount == 1 || callCount % 500 == 0) {
+-        AudioLog(2, _T("Layer2"), _T("Res Control: Fill=%.1f%% (Avg=%.1f%%), Err=%.1f%%, Int=%.1f, Rate=%.1f\n"),
+-                  fill * 100.0f, avgFill * 100.0f, error * 100.0f, rateIntegrator, resampledRate);
+-    }
+-
+-    g_audioDebugVars.paulaActualRate = resampledRate;
+-    g_audioDebugVars.paulaFramesGenerated += frameCount;
+-    g_audioDebugVars.ringBufferFillPercent = currentFill;
+-    g_audioDebugVars.resamplerInputRate = (int)resampledRate;
+-    g_audioDebugVars.resamplerOutputRate = config.targetSampleRate;
++    // 2. EMERGENCY MODE CHECK
++    CheckEmergencyConditions();
+     
+-    // 4. Управление ресемплером
+-    if (resampler) {
+-        if (!resampler->IsInitialized()) {
+-            resampler->Initialize(resampledRate, config.targetSampleRate, config.channels);
+-            lastPaulaRate = baseRate;
+-        } else if (fabs(baseRate - lastPaulaRate) > 1000.0) { // Смена режима
+-            resampler->Shutdown();
+-            resampler->Initialize(resampledRate, config.targetSampleRate, config.channels);
+-            lastPaulaRate = baseRate;
+-            resampledRate = baseRate;
+-            AudioLog(2, _T("Layer2"), _T("Major rate change: %.2f Hz"), baseRate);
+-        } else {
+-            resampler->SetInputRate(resampledRate);
+-        }
+-    }
++    // 3. RESAMPLER CONFIGURATION
++    ConfigureResampler();
+     
+-    // 5. Ресемплирование
+-    int outputFrames = (int)(frameCount * config.targetSampleRate / resampledRate) + 32;
++    // 4. RESAMPLING
++    // Calculate expected output frames
++    double effectiveRate = burstTracker.estimatedPaulaRate;
++    if (burstTracker.emergencyMode) {
++        effectiveRate += burstTracker.emergencyRateCorrection;
++    }
++    
++    // Safety fallback: if rate not yet estimated, use nominal
++    if (effectiveRate < 10000.0 || effectiveRate > 96000.0) {
++        effectiveRate = syncCyclesPerSec / cpuCyclesPerSample;
++    }
++    
++    int estimatedOutputFrames = (int)(frameCount * config.targetSampleRate / effectiveRate) + 32;
+     
+-    if (outputFrames > tempBufferCapacity) {
++    if (estimatedOutputFrames > tempBufferCapacity) {
+         delete[] tempBuffer;
+-        tempBufferCapacity = outputFrames * 2;
++        tempBufferCapacity = estimatedOutputFrames * 2;
+         tempBuffer = new float[tempBufferCapacity * config.channels];
+     }
+     
+     int resampledFrames = 0;
+-    if (resampler) {
++    if (resampler && resampler->IsInitialized()) {
+         resampledFrames = resampler->Process(
+             samples, frameCount,
+-            tempBuffer, outputFrames
++            tempBuffer, estimatedOutputFrames
+         );
++    } else if (resampler) {
++        // Initialize resampler on first call
++        resampler->Initialize(effectiveRate, config.targetSampleRate, config.channels);
++        lastPaulaRate = effectiveRate;
+     }
+     
+-    if (callCount == 1 || (callCount % 100 == 0)) {
+-        static double lastResRate = 0;
+-        if (fabs(resampledRate - lastResRate) > 1.0) {
+-            AudioLog(2, _T("Layer2"), _T("Dynamic Rate: %.2f Hz (Resampler)"), resampledRate);
+-            lastResRate = resampledRate;
+-        }
+-    }
+-    
++    // 5. WRITE TO RING BUFFER
+     if (resampledFrames > 0) {
+         if (ringBuffer && !ringBuffer->Write(tempBuffer, resampledFrames)) {
+             g_audioDebugVars.layer2Overruns++;
+         }
+     }
+     
+-    // 5. Периодическая статистика
+-    int64_t now = GetTickCount64();
+-    if (now - lastLogTime >= 2000) {
+-        lastLogTime = now;
+-        if (ringBuffer) {
+-            auto stats = ringBuffer->GetStats();
+-            g_audioDebugVars.layer2Underruns = stats.underruns;
+-        }
++    // 6. DEBUG VARIABLES UPDATE
++    g_audioDebugVars.paulaActualRate = effectiveRate;
++    g_audioDebugVars.paulaFramesGenerated += frameCount;
++    g_audioDebugVars.ringBufferFillPercent = GetBufferFillPercent();
++    g_audioDebugVars.resamplerInputRate = (int)effectiveRate;
++    g_audioDebugVars.resamplerOutputRate = config.targetSampleRate;
++    
++    // 7. PERIODIC LOGGING
++    static int logCounter = 0;
++    if (++logCounter % 100 == 0) {
++        AudioLog(2, _T("Layer2"), 
++                 _T("Rate=%.1f Hz, Fill=%.1f%%, Bursts=%d, Emergency=%d"),
++                 effectiveRate, 
++                 GetBufferFillPercent() * 100.0f,
++                 burstTracker.burstCount,
++                 burstTracker.emergencyMode ? 1 : 0);
+     }
+ }
