@@ -1,0 +1,74 @@
+name: Build WinUAE binary
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  SOLUTION_FILE_PATH: 'od-win32\winuae_msvc15'
+
+jobs:
+  Build-WinUAE-64bit-binary:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # Кэширование obj-файлов после сборки
+    # ...existing code...
+
+    - name: Cache WinUAE libs
+      id: cache-libs
+      uses: actions/cache@v4
+      with:
+        path: winuaeinclibs.zip
+        key: winuae-libs-v1
+
+    - name: Download WinUAE includes and libs
+      if: steps.cache-libs.outputs.cache-hit != 'true'
+      shell: powershell
+      run: Invoke-WebRequest -Uri "https://download.abime.net/winuae/files/b/winuaeinclibs.zip" -OutFile "winuaeinclibs.zip"
+
+    - name: Unpack WinUAE includes and libs to C:\dev
+      uses: ihiroky/extract-action@v1
+      with:
+        file_path: winuaeinclibs.zip
+        extract_dir: 'C:\dev'
+
+    - name: Add NASM to PATH
+      uses: ilammy/setup-nasm@v1.5.1
+
+
+    - name: Remove sound.obj from cache
+      shell: cmd
+      run: |
+        if exist x64\FullRelease\sound.obj del x64\FullRelease\sound.obj
+
+    - name: Build x64 FullRelease (incremental)
+      shell: cmd
+      run: |
+        :: Находим установленную VS 2022
+        for /f "usebackq tokens=*" %%i in (`vswhere.exe -latest -property installationPath`) do set "VS_PATH=%%i"
+        call "%VS_PATH%\Common7\Tools\VsDevCmd.bat"
+        set "INCLUDE=C:\dev\include;%INCLUDE%"
+        set "LIB=C:\dev\lib;%LIB%"
+        msbuild /m /p:Platform=x64 /p:Configuration=FullRelease /p:PlatformToolset=v143 "%SOLUTION_FILE_PATH%"
+
+    - name: Cache WinUAE obj files (except sound.obj)
+      id: cache-obj
+      uses: actions/cache@v4
+      with:
+        path: D:\a\WinUAE\WinUAE\od-win32\winuae_msvc15\x64\FullRelease\
+        key: winuae-obj-v1-${{ hashFiles('od-win32/winuae_msvc15/winuae_msvc.vcxproj') }}
+        restore-keys: |
+          winuae-obj-v1-
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: WinUAE-64-bit
+        path: D:\Amiga
+
