@@ -20,6 +20,8 @@ public:
     // channels: 2 для stereo
     bool Initialize(double inputRate, int outputRate, int channels);
     void Shutdown();
+
+    bool IsInitialized() const { return initialized; }
     
     // Update input rate dynamically (for drift correction)
     void SetInputRate(double newInputRate) { inputRate = newInputRate; }

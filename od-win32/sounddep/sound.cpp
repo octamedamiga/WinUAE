@@ -15,7 +15,6 @@
 #include "od-win32/sounddep/audio_layer2.h"
 #include "od-win32/sounddep/audio_wasapi_layer3.h"
 // Флаг для включения Layer 2 (можно сделать настройкой в GUI позже)
-#define USE_AUDIO_LAYER2
 
 #ifdef USE_AUDIO_LAYER2
 #pragma message("USE_AUDIO_LAYER2 is DEFINED")
@@ -3055,17 +3054,15 @@ static void handle_reset(void)
 void finish_sound_buffer (void)
 {
 #ifdef USE_AUDIO_LAYER2
-    static int defineLogCount = 0;
-    if (defineLogCount < 5) {
-        write_log(_T("DEBUG: USE_AUDIO_LAYER2 is DEFINED\n"));
-        defineLogCount++;
-    }
-#else
-    static int defineErrLogCount = 0;
-    if (defineErrLogCount < 5) {
-        write_log(_T("ERROR: USE_AUDIO_LAYER2 is NOT DEFINED!\n"));
-        defineErrLogCount++;
-    }
+	static int warnCount = 0;
+	if (warnCount < 10) {
+		write_log(_T("WARNING: finish_sound_buffer() called in DIRECT WRITE mode! (call #%d)\n"), warnCount + 1);
+		write_log(_T("This indicates audio.cpp is still using batched output path.\n"));
+		write_log(_T("Check that sample_handler is set to direct version.\n"));
+		warnCount++;
+	}
+	paula_sndbufpt = paula_sndbuffer;
+	return;
 #endif
 
 	static unsigned long tframe;

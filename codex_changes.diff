@@ -1,0 +1,1025 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
+diff --git a/audio.cpp b/audio.cpp
+index 8efa983ecd4462a6845d32fd020031984671d5b2..d47d7474b176188187c2f3107f045f520e933ad0 100644
+--- a/audio.cpp
++++ b/audio.cpp
+@@ -755,50 +755,55 @@ static void get_extra_channels_sample6(int *data1, int *data2, int *data3, int *
+ 	for (int i = 0; i < AUDIO_CHANNEL_STREAMS; i++) {
+ 		int ch = audio_extra_streams[i];
+ 		if (ch) {
+ 			do_extra_channels(idx, ch, data1, data2, data3, data4, data5, data6);
+ 			idx += ch;
+ 		}
+ 	}
+ }
+ 
+ static void set_sound_buffers(void)
+ {
+ #if SOUNDSTUFF > 1
+ 	paula_sndbufpt_prev = paula_sndbufpt_start;
+ 	paula_sndbufpt_start = paula_sndbufpt;
+ #endif
+ }
+ 
+ static void clear_sound_buffers(void)
+ {
+ 	memset(paula_sndbuffer, 0, paula_sndbufsize);
+ 	paula_sndbufpt = paula_sndbuffer;
+ }
+ 
+ static void check_sound_buffers(void)
+ {
++#ifdef USE_AUDIO_LAYER2
++	// DIRECT WRITE MODE: Buffer check disabled
++	// Samples go directly to Layer 2 via PushSample(), no intermediate buffer
++	return;
++#else
+ #if SOUNDSTUFF > 1
+ 	int len;
+ #endif
+ 
+ #ifdef DRIVESOUND
+ 	uae_s16 *bufp = (uae_s16*)paula_sndbufpt - 2;
+ #endif
+ 	if (active_sound_stereo == SND_4CH_CLONEDSTEREO) {
+ 		((uae_u16*)paula_sndbufpt)[0] = ((uae_u16*)paula_sndbufpt)[-2];
+ 		((uae_u16*)paula_sndbufpt)[1] = ((uae_u16*)paula_sndbufpt)[-1];
+ 		paula_sndbufpt = (uae_u16*)(((uae_u8*)paula_sndbufpt) + 2 * 2);
+ 	} else if (active_sound_stereo == SND_6CH_CLONEDSTEREO) {
+ 		uae_s16 *p = ((uae_s16*)paula_sndbufpt);
+ 		uae_s32 sum;
+ 		p[2] = p[-2];
+ 		p[3] = p[-1];
+ 		sum = (uae_s32)(p[-2]) + (uae_s32)(p[-1]) + (uae_s32)(p[2]) + (uae_s32)(p[3]);
+ 		p[0] = sum / 8;
+ 		p[1] = sum / 8;
+ 		paula_sndbufpt = (uae_u16*)(((uae_u8*)paula_sndbufpt) + 4 * 2);
+ 	} else if (active_sound_stereo == SND_8CH_CLONEDSTEREO) {
+ 		uae_s16 *p = ((uae_s16*)paula_sndbufpt);
+ 		uae_s32 sum;
+ 		p[2] = p[-2];
+ 		p[3] = p[-1];
+@@ -826,50 +831,51 @@ static void check_sound_buffers(void)
+ 		for (i = 0; i < len; i++) {
+ 			*p1 = (*p1 + *p2) / 2;
+ 		}
+ 		paula_sndbufpt = paula_sndbufpt_start;
+ 	}
+ #endif
+ #if SOUND_MODE_NG
+ 	if ((uae_u8*)paula_sndbufpt - (uae_u8*)paula_sndbuffer >= paula_sndbufsize * 2) {
+ 		paula_sndbufpt = paula_sndbuffer;
+ 	}
+ #else
+ 	if ((uae_u8*)paula_sndbufpt - (uae_u8*)paula_sndbuffer >= paula_sndbufsize) {
+ 		finish_sound_buffer();
+ 	}
+ #endif
+ #if SOUNDSTUFF > 1
+ 	while (doublesample-- > 0) {
+ 		memcpy(paula_sndbufpt, paula_sndbufpt_start, len * 2);
+ 		paula_sndbufpt += len;
+ 		if ((uae_u8 *)paula_sndbufpt - (uae_u8 *)paula_sndbuffer >= paula_sndbufsize) {
+ 			finish_sound_buffer();
+ 			paula_sndbufpt = paula_sndbuffer;
+ 		}
+ 	}
+ #endif
++#endif // USE_AUDIO_LAYER2
+ }
+ 
+ static void sample16i_sinc_handler (void)
+ {
+ 	int datas[AUDIO_CHANNELS_PAULA], data1;
+ 
+ 	samplexx_sinc_handler (datas, 0, AUDIO_CHANNELS_PAULA);
+ 	data1 = datas[0] + datas[3] + datas[1] + datas[2];
+ 	data1 = FINISH_DATA (data1, 18, 0);
+ 	
+ 	do_filter(&data1, 0);
+ 
+ 	get_extra_channels_sample2(&data1, NULL, 2);
+ 
+ 	set_sound_buffers ();
+ 	PUT_SOUND_WORD_MONO (data1);
+ 	check_sound_buffers ();
+ }
+ 
+ void sample16_handler (void)
+ {
+ 	int data0 = audio_channel[0].data.current_sample;
+ 	int data1 = audio_channel[1].data.current_sample;
+ 	int data2 = audio_channel[2].data.current_sample;
+ 	int data3 = audio_channel[3].data.current_sample;
+@@ -1240,50 +1246,146 @@ void sample16s_handler (void)
+ 	DO_CHANNEL_1 (data3, 3);
+ 
+ 	data0 &= audio_channel[0].data.adk_mask;
+ 	data1 &= audio_channel[1].data.adk_mask;
+ 	data2 &= audio_channel[2].data.adk_mask;
+ 	data3 &= audio_channel[3].data.adk_mask;
+ 
+ 	data0 += data3;
+ 	data1 += data2;
+ 	data2 = SBASEVAL16(1) + data0;
+ 	data2 = FINISH_DATA (data2, 15, 0);
+ 	data3 = SBASEVAL16(1) + data1;
+ 	data3 = FINISH_DATA (data3, 15, 1);
+ 
+ 	do_filter(&data2, 0);
+ 	do_filter(&data3, 1);
+ 
+ 	get_extra_channels_sample2(&data2, &data3, 0);
+ 
+ 	set_sound_buffers ();
+ 	put_sound_word_right(data2);
+ 	put_sound_word_left(data3);
+ 	check_sound_buffers ();
+ }
+ 
++#ifdef USE_AUDIO_LAYER2
++
++// ============================================================================
++// DIRECT LAYER 2 OUTPUT (NEW ARCHITECTURE)
++// ============================================================================
++
++extern AudioLayer2* g_audioLayer2;
++extern float scaled_sample_evtime;
++
++static int16_t g_sample_accumulator[2] = {0, 0};
++static int g_sample_channel_count = 0;
++
++static void put_sound_sample_direct(int16_t sample, int channel) {
++	g_sample_accumulator[channel] = sample;
++	g_sample_channel_count++;
++
++	if (g_sample_channel_count >= 2) {
++		if (g_audioLayer2) {
++			g_audioLayer2->PushSample(
++				g_sample_accumulator[0],
++				g_sample_accumulator[1],
++				scaled_sample_evtime
++			);
++		}
++		g_sample_channel_count = 0;
++	}
++}
++
++void sample16_handler_direct(void) {
++	int data0 = audio_channel[0].data.current_sample;
++	int data1 = audio_channel[1].data.current_sample;
++	int data2 = audio_channel[2].data.current_sample;
++	int data3 = audio_channel[3].data.current_sample;
++	int data;
++
++	DO_CHANNEL_1 (data0, 0);
++	DO_CHANNEL_1 (data1, 1);
++	DO_CHANNEL_1 (data2, 2);
++	DO_CHANNEL_1 (data3, 3);
++	data0 &= audio_channel[0].data.adk_mask;
++	data1 &= audio_channel[1].data.adk_mask;
++	data2 &= audio_channel[2].data.adk_mask;
++	data3 &= audio_channel[3].data.adk_mask;
++	data0 += data1;
++	data0 += data2;
++	data0 += data3;
++	data = SBASEVAL16(2) + data0;
++	data = FINISH_DATA (data, 16, 0);
++
++	do_filter(&data, 0);
++	get_extra_channels_sample2(&data, NULL, 0);
++
++	put_sound_sample_direct((int16_t)data, 0);
++	put_sound_sample_direct((int16_t)data, 1);
++}
++
++void sample16s_handler_direct(void) {
++	int data0 = audio_channel[0].data.current_sample;
++	int data1 = audio_channel[1].data.current_sample;
++	int data2 = audio_channel[2].data.current_sample;
++	int data3 = audio_channel[3].data.current_sample;
++	int data_left, data_right;
++
++	DO_CHANNEL_1 (data0, 0);
++	DO_CHANNEL_1 (data1, 1);
++	DO_CHANNEL_1 (data2, 2);
++	DO_CHANNEL_1 (data3, 3);
++	data0 &= audio_channel[0].data.adk_mask;
++	data1 &= audio_channel[1].data.adk_mask;
++	data2 &= audio_channel[2].data.adk_mask;
++	data3 &= audio_channel[3].data.adk_mask;
++
++	data_left = data0 + data2;
++	data_right = data1 + data3;
++
++	data_left = SBASEVAL16(1) + data_left;
++	data_right = SBASEVAL16(1) + data_right;
++
++	data_left = FINISH_DATA (data_left, 16, 0);
++	data_right = FINISH_DATA (data_right, 16, 1);
++
++	do_filter(&data_left, 0);
++	do_filter(&data_right, 1);
++
++	get_extra_channels_sample2(&data_left, &data_right, 0);
++
++	put_sound_sample_direct((int16_t)data_left, 0);
++	put_sound_sample_direct((int16_t)data_right, 1);
++}
++
++// ============================================================================
++// END DIRECT OUTPUT
++// ============================================================================
++
++#endif // USE_AUDIO_LAYER2
++
+ static void sample16si_crux_handler (void)
+ {
+ 	int data0 = audio_channel[0].data.current_sample;
+ 	int data1 = audio_channel[1].data.current_sample;
+ 	int data2 = audio_channel[2].data.current_sample;
+ 	int data3 = audio_channel[3].data.current_sample;
+ 	int data0p = audio_channel[0].data.last_sample;
+ 	int data1p = audio_channel[1].data.last_sample;
+ 	int data2p = audio_channel[2].data.last_sample;
+ 	int data3p = audio_channel[3].data.last_sample;
+ 
+ 	DO_CHANNEL_1 (data0, 0);
+ 	DO_CHANNEL_1 (data1, 1);
+ 	DO_CHANNEL_1 (data2, 2);
+ 	DO_CHANNEL_1 (data3, 3);
+ 	DO_CHANNEL_1 (data0p, 0);
+ 	DO_CHANNEL_1 (data1p, 1);
+ 	DO_CHANNEL_1 (data2p, 2);
+ 	DO_CHANNEL_1 (data3p, 3);
+ 
+ 	data0 &= audio_channel[0].data.adk_mask;
+ 	data0p &= audio_channel[0].data.adk_mask;
+ 	data1 &= audio_channel[1].data.adk_mask;
+ 	data1p &= audio_channel[1].data.adk_mask;
+ 	data2 &= audio_channel[2].data.adk_mask;
+@@ -2251,82 +2353,94 @@ void set_audio (void)
+ 	}
+ 
+ 	led_filter_forced = -1; // always off
+ 	sound_use_filter = sound_use_filter_sinc = 0;
+ 	if (currprefs.sound_filter) {
+ 		if (currprefs.sound_filter == FILTER_SOUND_ON)
+ 			led_filter_forced = 1;
+ 		if (currprefs.sound_filter == FILTER_SOUND_EMUL)
+ 			led_filter_forced = 0;
+ 		if (currprefs.sound_filter_type == FILTER_SOUND_TYPE_A500)
+ 			sound_use_filter = FILTER_MODEL_A500;
+ 		else if (currprefs.sound_filter_type == FILTER_SOUND_TYPE_A1200)
+ 			sound_use_filter = FILTER_MODEL_A1200;
+ 		else if (currprefs.sound_filter_type == FILTER_SOUND_TYPE_A500_FIXEDONLY)
+ 			sound_use_filter = FILTER_MODEL_A500_FIXEDONLY;
+ 	}
+ 	a500e_filter1_a0 = rc_calculate_a0 (currprefs.sound_freq, 6200);
+ 	a500e_filter2_a0 = rc_calculate_a0 (currprefs.sound_freq, 20000);
+ 	filter_a0 = rc_calculate_a0 (currprefs.sound_freq, 7000);
+ 	memset (sound_filter_state, 0, sizeof sound_filter_state);
+ 	led_filter_audio ();
+ 
+ 	makefir();
+ 
+ 	/* Select the right interpolation method.  */
++#ifdef USE_AUDIO_LAYER2
++	if (currprefs.sound_stereo == SND_MONO) {
++		sample_handler = sample16_handler_direct;
++		write_log(_T("AUDIO: Using DIRECT MONO handler (Layer 2)\n"));
++	} else {
++		sample_handler = sample16s_handler_direct;
++		write_log(_T("AUDIO: Using DIRECT STEREO handler (Layer 2)\n"));
++	}
++
++	// Note: Interpolation modes (SINC, anti-click, etc.) not yet supported in direct mode
++#else
+ 	if (sample_handler == sample16_handler
+ 		|| sample_handler == sample16i_crux_handler
+ 		|| sample_handler == sample16i_rh_handler
+ 		|| sample_handler == sample16i_sinc_handler
+ 		|| sample_handler == sample16i_anti_handler)
+ 	{
+ 		sample_handler = (currprefs.sound_interpol == 0 ? sample16_handler
+ 			: currprefs.sound_interpol == 3 ? sample16i_rh_handler
+ 			: currprefs.sound_interpol == 4 ? sample16i_crux_handler
+ 			: currprefs.sound_interpol == 2 ? sample16i_sinc_handler
+ 			: sample16i_anti_handler);
+ 	} else if (sample_handler == sample16s_handler
+ 		|| sample_handler == sample16si_crux_handler
+ 		|| sample_handler == sample16si_rh_handler
+ 		|| sample_handler == sample16si_sinc_handler
+ 		|| sample_handler == sample16si_anti_handler)
+ 	{
+ 		sample_handler = (currprefs.sound_interpol == 0 ? sample16s_handler
+ 			: currprefs.sound_interpol == 3 ? sample16si_rh_handler
+ 			: currprefs.sound_interpol == 4 ? sample16si_crux_handler
+ 			: currprefs.sound_interpol == 2 ? sample16si_sinc_handler
+ 			: sample16si_anti_handler);
+ 	} else if (sample_handler == sample16ss_handler
+ 		|| sample_handler == sample16ss_sinc_handler
+ 		|| sample_handler == sample16ss_anti_handler)
+ 	{
+ 		sample_handler = (currprefs.sound_interpol == 0 ? sample16ss_handler
+ 			: currprefs.sound_interpol == 3 ? sample16ss_handler
+ 			: currprefs.sound_interpol == 4 ? sample16ss_handler
+ 			: currprefs.sound_interpol == 2 ? sample16ss_sinc_handler
+ 			: sample16ss_anti_handler);
+ 	}
++#endif // USE_AUDIO_LAYER2
+ 	sample_prehandler = NULL;
+ 	if (sample_handler == sample16si_sinc_handler || sample_handler == sample16i_sinc_handler || sample_handler == sample16ss_sinc_handler) {
+ 		sample_prehandler = sinc_prehandler_paula;
+ 		sound_use_filter_sinc = sound_use_filter;
+ 		sound_use_filter = 0;
+ 	} else if (sample_handler == sample16si_anti_handler || sample_handler == sample16i_anti_handler || sample_handler == sample16ss_anti_handler) {
+ 		sample_prehandler = anti_prehandler;
+ 	}
+ 	for (int i = 0; i < AUDIO_CHANNELS_PAULA; i++) {
+ 		struct audio_channel_data *cdp = audio_channel + i;
+ 		audio_data[i] = &cdp->data;
+ 		if (currprefs.sound_volcnt) {
+ 			cdp->data.mixvol = 1;
+ 		} else {
+ 			cdp->data.mixvol = 0;
+ 		}
+ 	}
+ 	set_extra_prehandler();
+ 
+ 	if (currprefs.produce_sound == 0) {
+ 		eventtab[ev_audio].active = 0;
+ 		events_schedule ();
+ 	} else {
+ 		audio_activate ();
+ 		schedule_audio ();
+diff --git a/od-win32/sounddep/audio_layer2.cpp b/od-win32/sounddep/audio_layer2.cpp
+index f4e9ccd138d4d74d1c120bd5977b35fc5f5be88a..7fb2dcfa2cfd8794bca56ff197f63a6e585145b6 100644
+--- a/od-win32/sounddep/audio_layer2.cpp
++++ b/od-win32/sounddep/audio_layer2.cpp
+@@ -28,141 +28,338 @@ void AudioLog(int level, const TCHAR* layer, const TCHAR* format, ...) {
+     static int layerIndex = 0;
+     
+     // Simple layer hash для rate limiting
+     if (layer) {
+         layerIndex = (layer[0] + layer[1]) % 4;
+     }
+     
+     int64_t now = GetTickCount64();
+     if (now - lastLog[layerIndex] < 10) return;  // 10ms limit during debug
+     lastLog[layerIndex] = now;
+     
+     // Format message
+     TCHAR buffer[512];
+     va_list args;
+     va_start(args, format);
+     _vsntprintf_s(buffer, _countof(buffer), _TRUNCATE, format, args);
+     va_end(args);
+     
+     // Write to WinUAE log
+     write_log(_T("[AUDIO:%s] %s"), layer, buffer);
+ }
+ 
+ // AudioLayer2 implementation
+ AudioLayer2::AudioLayer2()
+     : initialized(false)
++    , inputBuffer(nullptr)
+     , ringBuffer(nullptr)
+     , resampler(nullptr)
+     , tempBuffer(nullptr)
+     , tempBufferCapacity(0)
++    , inputTempBuffer(nullptr)
++    , inputTempCapacity(0)
+     , lastPaulaRate(0.0)
+     , lastLogTime(0)
++    , rateMeasurement()
+ {
+     config.targetSampleRate = 0;
+     config.channels = 0;
+     config.ringBufferFrames = 0;
+ }
+ 
+ AudioLayer2::~AudioLayer2() {
+     Shutdown();
+ }
+ 
+ bool AudioLayer2::Initialize(const AudioLayer2Config& cfg) {
+     if (initialized) {
+         Shutdown();
+     }
+     
+     config = cfg;
++    rateMeasurement = RateMeasurement();
+     
+     // Validate config
+     if (config.targetSampleRate <= 0 || config.channels <= 0 || config.ringBufferFrames <= 0) {
+         AudioLog(0, _T("Layer2"), _T("Invalid config: rate=%d, channels=%d, frames=%d\n"),
+                  config.targetSampleRate, config.channels, config.ringBufferFrames);
+         return false;
+     }
++
++    // DIRECT WRITE MODE: Create input ring buffer (10ms capacity)
++    int inputCapacity = config.targetSampleRate / 100;
++    if (inputCapacity < 16) {
++        inputCapacity = 16;
++    }
++    inputBuffer = new AudioRingBuffer<int16_t>();
++    if (!inputBuffer->Initialize(inputCapacity, config.channels)) {
++        AudioLog(0, _T("Layer2"), _T("Input ring buffer init failed\n"));
++        delete inputBuffer;
++        inputBuffer = nullptr;
++        return false;
++    }
+     
+     // Create ring buffer
+     ringBuffer = new AudioRingBuffer<float>();
+     if (!ringBuffer->Initialize(config.ringBufferFrames, config.channels)) {
+         AudioLog(0, _T("Layer2"), _T("Ring buffer init failed\n"));
+         delete ringBuffer;
+         ringBuffer = nullptr;
+         return false;
+     }
+     
+     // Create resampler (will be initialized later when we know Paula rate)
+     resampler = new AudioResampler();
+     
+     // Allocate temp buffer (начальный размер)
+     tempBufferCapacity = 2048;
+     tempBuffer = new float[tempBufferCapacity * config.channels];
+-    
++
+     if (!tempBuffer) {
+         AudioLog(0, _T("Layer2"), _T("Temp buffer allocation failed\n"));
++        delete inputBuffer;
++        inputBuffer = nullptr;
++        delete ringBuffer;
++        delete resampler;
++        ringBuffer = nullptr;
++        resampler = nullptr;
++        return false;
++    }
++
++    // Temporary input buffer for direct mode
++    inputTempCapacity = 128;
++    inputTempBuffer = new int16_t[inputTempCapacity * config.channels];
++    if (!inputTempBuffer) {
++        AudioLog(0, _T("Layer2"), _T("Input temp buffer allocation failed\n"));
++        delete[] tempBuffer;
++        tempBuffer = nullptr;
++        delete inputBuffer;
++        inputBuffer = nullptr;
+         delete ringBuffer;
+         delete resampler;
+         ringBuffer = nullptr;
+         resampler = nullptr;
+         return false;
+     }
+     
+     initialized = true;
+     lastLogTime = GetTickCount64();
+     
+-    AudioLog(2, _T("Layer2"), _T("Initialized: %d Hz, %d ch, %d frames buffer (%.1f ms)\n"),
+-             config.targetSampleRate, config.channels, config.ringBufferFrames,
+-             (float)config.ringBufferFrames * 1000.0f / config.targetSampleRate);
++    AudioLog(2, _T("Layer2"), _T("Initialized: %d Hz, %d ch, InputBuf=%d frames, OutputBuf=%d frames\n"),
++             config.targetSampleRate, config.channels, inputCapacity, config.ringBufferFrames);
+     
+     return true;
+ }
+ 
+ void AudioLayer2::Shutdown() {
+     if (!initialized) return;
+     
++    if (inputBuffer) {
++        inputBuffer->Shutdown();
++        delete inputBuffer;
++        inputBuffer = nullptr;
++    }
++
+     if (ringBuffer) {
+         ringBuffer->Shutdown();
+         delete ringBuffer;
+         ringBuffer = nullptr;
+     }
+     
+     if (resampler) {
+         resampler->Shutdown();
+         delete resampler;
+         resampler = nullptr;
+     }
+     
+     if (tempBuffer) {
+         delete[] tempBuffer;
+         tempBuffer = nullptr;
+     }
++
++    if (inputTempBuffer) {
++        delete[] inputTempBuffer;
++        inputTempBuffer = nullptr;
++    }
+     
+     tempBufferCapacity = 0;
++    inputTempCapacity = 0;
+     initialized = false;
+     
+     AudioLog(2, _T("Layer2"), _T("Shutdown complete\n"));
+ }
+ 
++// ============================================================================
++// DIRECT WRITE MODE IMPLEMENTATION
++// ============================================================================
++
++void AudioLayer2::PushSample(int16_t left, int16_t right, float cycles_per_sample) {
++    if (!initialized || !inputBuffer) return;
++
++    g_audioDebugVars.pushSampleCalls++;
++
++    int16_t stereo[2] = {left, right};
++
++    if (!inputBuffer->Write(stereo, 1)) {
++        g_audioDebugVars.layer2Overruns++;
++
++        // Drop oldest sample to make room
++        int16_t dummy[2];
++        inputBuffer->Read(dummy, 1);
++        inputBuffer->Write(stereo, 1);
++    }
++
++    UpdateRateMeasurement(cycles_per_sample);
++    ResampleInputToOutput();
++}
++
++void AudioLayer2::UpdateRateMeasurement(float cycles_per_sample) {
++    extern double syncbase;
++    if (cycles_per_sample <= 0.0f) return;
++
++    double instantRate = syncbase / cycles_per_sample;
++
++    double minRate = config.targetSampleRate * 0.5;
++    double maxRate = config.targetSampleRate * 1.5;
++    if (instantRate < minRate || instantRate > maxRate) {
++        static int errorCount = 0;
++        if (errorCount++ < 5) {
++            AudioLog(1, _T("Layer2"), _T("WARNING: Rejected outlier rate: %.1f Hz (cycles=%.2f)\n"),
++                     instantRate, cycles_per_sample);
++        }
++        return;
++    }
++
++    const double alpha = 0.0001;
++
++    if (rateMeasurement.currentRate == 0.0) {
++        rateMeasurement.currentRate = instantRate;
++        rateMeasurement.emaRate = instantRate;
++        AudioLog(2, _T("Layer2"), _T("Initial rate measurement: %.2f Hz\n"), instantRate);
++    } else {
++        rateMeasurement.emaRate = alpha * instantRate + (1.0 - alpha) * rateMeasurement.emaRate;
++        rateMeasurement.currentRate = rateMeasurement.emaRate;
++    }
++
++    rateMeasurement.sampleCount++;
++
++    if (rateMeasurement.sampleCount % 10000 == 0) {
++        uint64_t now = GetTickCount64();
++        if (now - rateMeasurement.lastLogTime > 5000) {
++            AudioLog(2, _T("Layer2"), _T("Rate: instant=%.2f Hz, EMA=%.2f Hz, InputBuf=%d, OutputBuf=%.1f%%\n"),
++                     instantRate,
++                     rateMeasurement.emaRate,
++                     inputBuffer ? inputBuffer->GetAvailableRead() : 0,
++                     ringBuffer ? ringBuffer->GetFillPercent() * 100.0f : 0.0f);
++            rateMeasurement.lastLogTime = now;
++        }
++    }
++
++    g_audioDebugVars.estimatedPaulaRateHz = rateMeasurement.currentRate;
++    if (inputBuffer) g_audioDebugVars.inputBufferFrames = inputBuffer->GetAvailableRead();
++    if (ringBuffer) g_audioDebugVars.outputBufferFrames = ringBuffer->GetAvailableRead();
++}
++
++void AudioLayer2::ResampleInputToOutput() {
++    if (!initialized || !inputBuffer || !ringBuffer || !resampler) return;
++
++    int available = inputBuffer->GetAvailableRead();
++    if (available < 16) {
++        return;
++    }
++
++    int toProcess = available;
++    if (toProcess > 128) {
++        toProcess = 128;
++    }
++
++    g_audioDebugVars.resampleCalls++;
++
++    if (toProcess > inputTempCapacity) {
++        delete[] inputTempBuffer;
++        inputTempCapacity = toProcess * 2;
++        inputTempBuffer = new int16_t[inputTempCapacity * config.channels];
++    }
++
++    int read = inputBuffer->Read(inputTempBuffer, toProcess);
++    if (read <= 0) {
++        return;
++    }
++
++    if (!resampler->IsInitialized()) {
++        double initialRate = rateMeasurement.currentRate > 0.0
++            ? rateMeasurement.currentRate
++            : static_cast<double>(config.targetSampleRate);
++
++        if (!resampler->Initialize(initialRate, config.targetSampleRate, config.channels)) {
++            AudioLog(0, _T("Layer2"), _T("ERROR: Resampler initialization failed!\n"));
++            return;
++        }
++
++        AudioLog(2, _T("Layer2"), _T("Resampler initialized: %.2f Hz -> %d Hz\n"),
++                 initialRate, config.targetSampleRate);
++    } else if (rateMeasurement.currentRate > 0.0) {
++        resampler->SetInputRate(rateMeasurement.currentRate);
++    }
++
++    double inputRate = rateMeasurement.currentRate > 0.0
++        ? rateMeasurement.currentRate
++        : static_cast<double>(config.targetSampleRate);
++    double rateRatio = static_cast<double>(config.targetSampleRate) / inputRate;
++    int expectedOutput = static_cast<int>(read * rateRatio) + 32;
++
++    if (expectedOutput > tempBufferCapacity) {
++        delete[] tempBuffer;
++        tempBufferCapacity = expectedOutput * 2;
++        tempBuffer = new float[tempBufferCapacity * config.channels];
++        AudioLog(2, _T("Layer2"), _T("Temp buffer expanded to %d frames\n"), tempBufferCapacity);
++    }
++
++    int resampled = resampler->Process(
++        inputTempBuffer,
++        read,
++        tempBuffer,
++        expectedOutput
++    );
++
++    if (resampled > 0) {
++        if (!ringBuffer->Write(tempBuffer, resampled)) {
++            g_audioDebugVars.layer2Overruns++;
++
++            static int overrunLogCount = 0;
++            if (overrunLogCount++ % 100 == 0) {
++                AudioLog(1, _T("Layer2"), _T("WARNING: Output buffer full! Overruns=%llu\n"),
++                         g_audioDebugVars.layer2Overruns);
++            }
++        }
++    }
++}
++
++// ============================================================================
++// LEGACY BATCHED MODE (kept for compatibility/fallback)
++// ============================================================================
++
+ void AudioLayer2::ProcessFromPaula(
+     const int16_t* samples,
+     int frameCount,
+     double cpuCyclesPerSample,
+     double syncCyclesPerSec)
+ {
+     static int callCount = 0;
+     callCount++;
+     
+     if (!initialized || !samples || frameCount == 0) return;
+     
+     g_audioDebugVars.totalProcessCalls++;
+     
+     // Calculate Paula NATIVE rate (Hardware Cycle-Perfect)
+     // Formula: rate = (scaled cycles per sec) / (scaled cycles per sample)
+     double paulaRate = syncCyclesPerSec / cpuCyclesPerSample; 
+     
+     if (callCount == 1 || callCount % 200 == 0) {
+         AudioLog(2, _T("Layer2"), _T("Paula Native: base=%.0f, interval=%.2f -> rate=%.2f Hz\n"),
+                   syncCyclesPerSec, cpuCyclesPerSample, paulaRate);
+     }
+     
+     if (paulaRate < 1000.0 || paulaRate > 200000.0) return;
+     
+     g_audioDebugVars.paulaActualRate = paulaRate;
+diff --git a/od-win32/sounddep/audio_layer2.h b/od-win32/sounddep/audio_layer2.h
+index 6fba54a1c51f2988114d6773189c5071c7f8f190..9fe28d618687b72de8113879e9a450f802453f12 100644
+--- a/od-win32/sounddep/audio_layer2.h
++++ b/od-win32/sounddep/audio_layer2.h
+@@ -1,104 +1,139 @@
+ #pragma once
+ 
+ // WinUAE includes - ОБЯЗАТЕЛЬНО ПЕРВЫМИ!
+ #include "sysconfig.h"
+ #include "sysdeps.h"
+ 
+ // Standard C++ includes
+ #include <atomic>
+ #include <cstdint>
+ 
++// Enable Layer 2 direct-write path across translation units
++#ifndef USE_AUDIO_LAYER2
++#define USE_AUDIO_LAYER2
++#endif
++
+ // Forward declarations
+ template<typename T> class AudioRingBuffer;
+ class AudioResampler;
+ 
+ // Debug variables - глобальные для Watch Window
+ struct AudioDebugVars {
+     // Layer 1 (Paula)
+     double paulaActualRate;
+     uint64_t paulaFramesGenerated;
+     
+     // Layer 2
+     float ringBufferFillPercent;
+     uint64_t layer2Underruns;
+     uint64_t layer2Overruns;
+     int resamplerInputRate;
+     int resamplerOutputRate;
+     
+     // Layer 3 (WASAPI - будет добавлено в Phase 2)
+     int wasapiPeriodFrames;
+     uint64_t wasapiCallbackCount;
+     
+     // Timing
+     double avgProcessTimeUs;
+     double maxProcessTimeUs;
+     
+     // General
+     uint64_t totalProcessCalls;
++
++    // DIRECT WRITE MODE
++    double estimatedPaulaRateHz;
++    int inputBufferFrames;
++    int outputBufferFrames;
++    uint64_t pushSampleCalls;
++    uint64_t resampleCalls;
+ };
+ 
+ extern AudioDebugVars g_audioDebugVars;
+ 
+ // Configuration для Layer 2
+ struct AudioLayer2Config {
+     int targetSampleRate;   // 48000 для Phase 1
+     int channels;           // 2 для stereo
+     int ringBufferFrames;   // Размер ring buffer в frames (например, 1920 = 40ms @ 48kHz)
+ };
+ 
+ // Main Layer 2 class
+ class AudioLayer2 {
+ public:
+     AudioLayer2();
+     ~AudioLayer2();
+     
+     // Initialization
+     bool Initialize(const AudioLayer2Config& config);
+     void Shutdown();
+-    
++
++    // DIRECT WRITE MODE: Push single sample (replaces batched ProcessFromPaula)
++    // Called once per Paula sample from audio.cpp sample_handler
++    void PushSample(int16_t left, int16_t right, float cycles_per_sample);
++
+     // Processing (вызывается из Paula thread)
+     // samples: int16_t stereo interleaved
+     // frameCount: количество frames (не samples!)
+     // cpuCyclesPerSample: для вычисления actual Paula rate
+     void ProcessFromPaula(
+         const int16_t* samples,
+         int frameCount,
+         double cpuCyclesPerSample,
+         double syncCyclesPerSec
+     );
+     
+     // Pull samples для Layer 3 (WASAPI callback)
+     // output: float буфер
+     // requestedFrames: сколько frames запросил WASAPI
+     // Возвращает: количество frames (всегда = requestedFrames, с zero-fill если underrun)
+     int PullSamples(float* output, int requestedFrames);
+     
+     // Query
+     float GetBufferFillPercent() const;
+     bool IsInitialized() const { return initialized; }
+     
+ private:
+     bool initialized;
+     AudioLayer2Config config;
+-    
++
+     // Components (forward declared выше)
++    AudioRingBuffer<int16_t>* inputBuffer;   // Input buffer (raw Paula samples)
+     AudioRingBuffer<float>* ringBuffer;
+     AudioResampler* resampler;
+-    
++
+     // Temporary buffer для resampler output
+     float* tempBuffer;
+     int tempBufferCapacity;
++
++    // Temporary buffer for input samples (direct mode)
++    int16_t* inputTempBuffer;
++    int inputTempCapacity;
+     
+     // State
+     double lastPaulaRate;
+     int64_t lastLogTime;
++
++    // DIRECT WRITE MODE: Rate measurement
++    struct RateMeasurement {
++        double currentRate;      // Current measured rate (Hz)
++        double emaRate;          // Smoothed rate estimate
++        int sampleCount;         // Samples processed
++        uint64_t lastLogTime;    // For periodic logging
++
++        RateMeasurement() : currentRate(0.0), emaRate(0.0), sampleCount(0), lastLogTime(0) {}
++    } rateMeasurement;
++
++    // Helper methods for direct write mode
++    void UpdateRateMeasurement(float cycles_per_sample);
++    void ResampleInputToOutput();
+ };
+ 
+ // Global instance (создается в sound.cpp)
+ extern AudioLayer2* g_audioLayer2;
+ 
+ // Logging helper
+ void AudioLog(int level, const TCHAR* layer, const TCHAR* format, ...);
+ 
+ // Global log level (0=Errors, 1=Warnings, 2=Info, 3=Verbose)
+ extern int g_audioLogLevel;
+diff --git a/od-win32/sounddep/audio_resampler.h b/od-win32/sounddep/audio_resampler.h
+index 13852d37eb43e92581baa4b8ac265790839bde24..a16b30dac9887ffbf5437efbbddd2d54bb1152b3 100644
+--- a/od-win32/sounddep/audio_resampler.h
++++ b/od-win32/sounddep/audio_resampler.h
+@@ -1,47 +1,49 @@
+ #pragma once
+ 
+ // WinUAE includes
+ #include "sysconfig.h"
+ #include "sysdeps.h"
+ 
+ // Standard includes
+ #include <cstdint>
+ 
+ // Linear interpolation resampler
+ // Простой и эффективный для Phase 1
+ class AudioResampler {
+ public:
+     AudioResampler();
+     ~AudioResampler();
+     
+     // Initialize
+     // inputRate: Paula rate (например, 48011.234 Hz)
+     // outputRate: Target rate (например, 48000 Hz)
+     // channels: 2 для stereo
+     bool Initialize(double inputRate, int outputRate, int channels);
+     void Shutdown();
++
++    bool IsInitialized() const { return initialized; }
+     
+     // Update input rate dynamically (for drift correction)
+     void SetInputRate(double newInputRate) { inputRate = newInputRate; }
+     
+     // Process
+     // input: int16_t samples (interleaved)
+     // inputFrames: количество frames
+     // output: float samples (interleaved)
+     // outputCapacity: максимум frames в output buffer
+     // Возвращает: количество записанных frames в output
+     int Process(
+         const int16_t* input,
+         int inputFrames,
+         float* output,
+         int outputCapacity
+     );
+     
+ private:
+     bool initialized;
+     double inputRate;
+     int outputRate;
+     int channels;
+     
+     // Resampling state
+     double position;  // Fractional position в input
+diff --git a/od-win32/sounddep/sound.cpp b/od-win32/sounddep/sound.cpp
+index f1347e896cfcdcdd7547a4be57c75267ccf5e001..daac1c2544a1f80c344b9b13f4253cba388128dc 100644
+--- a/od-win32/sounddep/sound.cpp
++++ b/od-win32/sounddep/sound.cpp
+@@ -1,43 +1,42 @@
+ /*
+ * UAE - The Un*x Amiga Emulator
+ *
+ * Win32 sound interface (DirectSound)
+ *
+ * Copyright 1997 Mathias Ortmann
+ * Copyright 1997-2001 Brian King
+ * Copyright 2000-2002 Bernd Roesch
+ * Copyright 2002-2003 Toni Wilen
+ */
+ #include "sysconfig.h"
+ #include "sysdeps.h"
+ 
+ // PATCH
+ #include "od-win32/sounddep/audio_layer2.h"
+ #include "od-win32/sounddep/audio_wasapi_layer3.h"
+ // Флаг для включения Layer 2 (можно сделать настройкой в GUI позже)
+-#define USE_AUDIO_LAYER2
+ 
+ #ifdef USE_AUDIO_LAYER2
+ #pragma message("USE_AUDIO_LAYER2 is DEFINED")
+ #else
+ #pragma message("WARNING: USE_AUDIO_LAYER2 is NOT DEFINED!")
+ #endif
+ 
+ #include "options.h"
+ #include "audio.h"
+ #include "events.h"
+ #include "custom.h"
+ #include "threaddep/thread.h"
+ #include "avioutput.h"
+ #include "gui.h"
+ #include "render.h"
+ #include "win32.h"
+ #include "savestate.h"
+ #include "driveclick.h"
+ #include "gensound.h"
+ #include "xwin.h"
+ 
+ #include <windows.h>
+ #include <mmreg.h>
+ #include <dsound.h>
+ #include <ks.h>
+@@ -3033,61 +3032,59 @@ static void handle_reset(void)
+ 			int type = sound_devices[currprefs.win32_soundcard]->type;
+ 			int max = enumerate_sound_devices();
+ 			for (int i = 0; i < max; i++) {
+ 				if (sound_devices[i]->alname == NULL && sound_devices[i]->type == type) {
+ 					currprefs.win32_soundcard = changed_prefs.win32_soundcard = i;
+ 					if (open_sound())
+ 						return;
+ 					break;
+ 				}
+ 			}
+ 			currprefs.produce_sound = changed_prefs.produce_sound = 1;
+ 		} else {
+ 			write_log(_T("Retrying sound.. %d..\n"), sdp->resetcnt);
+ 			sdp->resetcnt--;
+ 			sdp->reset = true;
+ 		}
+ 	} else {
+ 		resume_sound_device(sdp);
+ 	}
+ }
+ 
+ 
+ void finish_sound_buffer (void)
+ {
+ #ifdef USE_AUDIO_LAYER2
+-    static int defineLogCount = 0;
+-    if (defineLogCount < 5) {
+-        write_log(_T("DEBUG: USE_AUDIO_LAYER2 is DEFINED\n"));
+-        defineLogCount++;
+-    }
+-#else
+-    static int defineErrLogCount = 0;
+-    if (defineErrLogCount < 5) {
+-        write_log(_T("ERROR: USE_AUDIO_LAYER2 is NOT DEFINED!\n"));
+-        defineErrLogCount++;
+-    }
++	static int warnCount = 0;
++	if (warnCount < 10) {
++		write_log(_T("WARNING: finish_sound_buffer() called in DIRECT WRITE mode! (call #%d)\n"), warnCount + 1);
++		write_log(_T("This indicates audio.cpp is still using batched output path.\n"));
++		write_log(_T("Check that sample_handler is set to direct version.\n"));
++		warnCount++;
++	}
++	paula_sndbufpt = paula_sndbuffer;
++	return;
+ #endif
+ 
+ 	static unsigned long tframe;
+ 	int bufsize = addrdiff((uae_u8*)paula_sndbufpt, (uae_u8*)paula_sndbuffer);
+ 
+     static int bufLogCount = 0;
+     if (bufLogCount < 10) { // Log first few calls
+         write_log(_T("DEBUG bufsize: paula_sndbufpt=%p, paula_sndbuffer=%p, bufsize=%d\n"),
+                 paula_sndbufpt, paula_sndbuffer, bufsize);
+         bufLogCount++;
+     }
+ 
+     if (bufsize < 0 || bufsize > 100000) {
+         write_log(_T("ERROR: bufsize INVALID (%d)! Resetting.\n"), bufsize);
+         paula_sndbufpt = paula_sndbuffer;
+         return;
+     }
+ 
+ 	if (sdp->reset) {
+ 		handle_reset();
+ 		paula_sndbufpt = paula_sndbuffer;
+ 		return;
+ 	}
+ 
+ 	if (currprefs.turbo_emulation) {
+ 
+EOF
+)

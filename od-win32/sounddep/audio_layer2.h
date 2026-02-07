@@ -8,6 +8,11 @@
 #include <atomic>
 #include <cstdint>
 
+// Enable Layer 2 direct-write path across translation units
+#ifndef USE_AUDIO_LAYER2
+#define USE_AUDIO_LAYER2
+#endif
+
 // Forward declarations
 template<typename T> class AudioRingBuffer;
 class AudioResampler;
@@ -35,6 +40,13 @@ struct AudioDebugVars {
     
     // General
     uint64_t totalProcessCalls;
+
+    // DIRECT WRITE MODE
+    double estimatedPaulaRateHz;
+    int inputBufferFrames;
+    int outputBufferFrames;
+    uint64_t pushSampleCalls;
+    uint64_t resampleCalls;
 };
 
 extern AudioDebugVars g_audioDebugVars;
@@ -55,7 +67,11 @@ public:
     // Initialization
     bool Initialize(const AudioLayer2Config& config);
     void Shutdown();
-    
+
+    // DIRECT WRITE MODE: Push single sample (replaces batched ProcessFromPaula)
+    // Called once per Paula sample from audio.cpp sample_handler
+    void PushSample(int16_t left, int16_t right, float cycles_per_sample);
+
     // Processing (вызывается из Paula thread)
     // samples: int16_t stereo interleaved
     // frameCount: количество frames (не samples!)
@@ -80,18 +96,37 @@ public:
 private:
     bool initialized;
     AudioLayer2Config config;
-    
+
     // Components (forward declared выше)
+    AudioRingBuffer<int16_t>* inputBuffer;   // Input buffer (raw Paula samples)
     AudioRingBuffer<float>* ringBuffer;
     AudioResampler* resampler;
-    
+
     // Temporary buffer для resampler output
     float* tempBuffer;
     int tempBufferCapacity;
+
+    // Temporary buffer for input samples (direct mode)
+    int16_t* inputTempBuffer;
+    int inputTempCapacity;
     
     // State
     double lastPaulaRate;
     int64_t lastLogTime;
+
+    // DIRECT WRITE MODE: Rate measurement
+    struct RateMeasurement {
+        double currentRate;      // Current measured rate (Hz)
+        double emaRate;          // Smoothed rate estimate
+        int sampleCount;         // Samples processed
+        uint64_t lastLogTime;    // For periodic logging
+
+        RateMeasurement() : currentRate(0.0), emaRate(0.0), sampleCount(0), lastLogTime(0) {}
+    } rateMeasurement;
+
+    // Helper methods for direct write mode
+    void UpdateRateMeasurement(float cycles_per_sample);
+    void ResampleInputToOutput();
 };
 
 // Global instance (создается в sound.cpp)
